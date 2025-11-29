@@ -1,0 +1,104 @@
+# Remember to run wings daemon **first** to create 'pterodactyl_nw' network!
+
+services:
+  # PTERODACTYL PANEL SECTION -->
+
+  database:
+    image: mariadb:lts
+    restart: always
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - "/srv/pterodactyl/database:/var/lib/mysql"
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: "/run/secrets/db_root_pass"
+      MYSQL_DATABASE: "panel"
+      MYSQL_USER: "pterodactyl"
+      MYSQL_PASSWORD_FILE: "/run/secrets/db_user_pass"
+    healthcheck:
+      test: [ "CMD", "healthcheck.sh", "--connect", "--innodb_initialized" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    secrets:
+      - db_root_pass
+      - db_user_pass
+
+  cache:
+    image: redis:8-alpine
+    restart: always
+    # Note: this redis instance is only accessible from panel network.
+    # It is meant to be used only by Pterodactyl panel.
+    # Running it without password is *fine* in this case.
+    # 
+    # DO NOT EXPOSE THIS INSTANCE!!!
+
+  panel:
+    image: ghcr.io/pterodactyl/panel:latest
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      database:
+        condition: service_healthy
+      cache:
+        condition: service_started
+    volumes:
+      - "/srv/pterodactyl/var/:/app/var/"
+      - "/srv/pterodactyl/nginx/:/etc/nginx/http.d/"
+      - "/srv/pterodactyl/certs/:/etc/letsencrypt/"
+      - "/srv/pterodactyl/logs/:/app/storage/logs"
+      - "./bin/panel_start.sh:/app/panel_start.sh:ro"
+    env_file:
+      - "./secrets/pterodactyl.env"
+    environment:
+      HASHIDS_LENGTH: 8
+    entrypoint: ["/bin/ash", "/app/panel_start.sh"]
+    command: ["supervisord", "-n", "-c", "/etc/supervisord.conf"]
+
+  # <-- END PTERODACTYL PANEL
+  
+  # SHARED GAME SERVICES SECTION -->
+
+  database-game:
+    image: mariadb:lts
+    container_name: game-db
+    restart: always
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - "/srv/pterodactyl/database_game:/var/lib/mysql"
+    environment:
+      # Ideally we should use a different password here
+      # Does it matter? If you are using this setup - not really
+      MYSQL_ROOT_PASSWORD_FILE: "/run/secrets/db_root_pass"
+      MYSQL_USER: "pterodactyl"
+      MYSQL_PASSWORD_FILE: "/run/secrets/db_user_pass"
+    networks:
+      - default
+      - game
+    healthcheck:
+      test: [ "CMD", "healthcheck.sh", "--connect", "--innodb_initialized" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    secrets:
+      - db_root_pass
+      - db_user_pass
+
+  # <-- END SHARED GAME SERVICES
+
+
+secrets:
+  db_root_pass:
+    file: "./secrets/db_root_pass.secret"
+  db_user_pass:
+    file: "./secrets/db_user_pass.secret"
+networks:
+  default:
+    name: "pterodactyl_panel"
+    ipam:
+      config:
+        - subnet: 192.168.10.0/24
+  game:
+    name: "pterodactyl_nw" # !! wings network name, 'pterodactyl_nw' by default
+    external: true
